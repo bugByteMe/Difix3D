@@ -7,8 +7,10 @@ from tqdm import tqdm
 import torch
 from torchvision import transforms
 from transformers import AutoTokenizer, CLIPTextModel
-from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler
+from diffusers import DDPMScheduler, DDIMScheduler
 from peft import LoraConfig
+# NOTE: Use the custom VAE, compatible with nvidia/difix weights
+from autoencoder_kl import AutoencoderKL
 p = "src/"
 sys.path.append(p)
 from einops import rearrange, repeat
@@ -116,31 +118,40 @@ def save_ckpt(net_difix, optimizer, outf):
 class Difix(torch.nn.Module):
     def __init__(self, pretrained_name=None, pretrained_path=None, ckpt_folder="checkpoints", lora_rank_vae=4, mv_unet=False, timestep=999):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("stabilityai/sd-turbo", subfolder="tokenizer")
-        self.text_encoder = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda()
+        # NOTE: Initialize weights from nvidia/difix
+        self.tokenizer = AutoTokenizer.from_pretrained("/home/guojiarui/river/models/nvidia/difix", subfolder="tokenizer")
+        self.text_encoder = CLIPTextModel.from_pretrained("/home/guojiarui/river/models/nvidia/difix", subfolder="text_encoder").cuda()
         self.sched = make_1step_sched()
 
-        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
+        vae = AutoencoderKL.from_pretrained("/home/guojiarui/river/models/nvidia/difix", subfolder="vae")
         vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
         vae.decoder.forward = my_vae_decoder_fwd.__get__(vae.decoder, vae.decoder.__class__)
         # add the skip connection convs
-        vae.decoder.skip_conv_1 = torch.nn.Conv2d(512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
-        vae.decoder.skip_conv_2 = torch.nn.Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
-        vae.decoder.skip_conv_3 = torch.nn.Conv2d(128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
-        vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
-        vae.decoder.ignore_skip = False
+
+        # NOTE: skip connections already exists in nvidia/difix VAE
+        # vae.decoder.skip_conv_1 = torch.nn.Conv2d(512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
+        # vae.decoder.skip_conv_2 = torch.nn.Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
+        # vae.decoder.skip_conv_3 = torch.nn.Conv2d(128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
+        # vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False).cuda()
+        # vae.decoder.ignore_skip = False
         
         if mv_unet:
             from mv_unet import UNet2DConditionModel
         else:
             from diffusers import UNet2DConditionModel
 
-        unet = UNet2DConditionModel.from_pretrained("stabilityai/sd-turbo", subfolder="unet")
-
+        unet = UNet2DConditionModel.from_pretrained("/home/guojiarui/river/models/nvidia/difix", subfolder="unet")
+        
+        # NOTE: We freeze VAE encoder here. nvidia/difix VAE already has lora weights
+        self.target_modules_vae = []
+        self.lora_rank_vae = lora_rank_vae
         if pretrained_path is not None:
             sd = torch.load(pretrained_path, map_location="cpu")
-            vae_lora_config = LoraConfig(r=sd["rank_vae"], init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
-            vae.add_adapter(vae_lora_config, adapter_name="vae_skip")
+            # NOTE: Skip lora config adding, nvidia/difix VAE already has lora weights.
+            # This branched is used during inference.
+            
+            # vae_lora_config = LoraConfig(r=sd["rank_vae"], init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+            # vae.add_adapter(vae_lora_config, adapter_name="vae_skip")
             _sd_vae = vae.state_dict()
             for k in sd["state_dict_vae"]:
                 _sd_vae[k] = sd["state_dict_vae"][k]
@@ -151,6 +162,8 @@ class Difix(torch.nn.Module):
             unet.load_state_dict(_sd_unet)
 
         elif pretrained_name is None and pretrained_path is None:
+            # NOTE: Unused
+
             print("Initializing model with random weights")
             target_modules_vae = []
 

@@ -51,6 +51,7 @@ def main(args):
         os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
 
     net_difix = Difix(
+        pretrained_name="nvidia/difix", # Add this name to avoid random weight initialization.
         lora_rank_vae=args.lora_rank_vae, 
         timestep=args.timestep,
         mv_unet=args.mv_unet,
@@ -101,7 +102,7 @@ def main(args):
     dataset_train = PairedDataset(dataset_path=args.dataset_path, split="train", tokenizer=net_difix.tokenizer)
     dl_train = torch.utils.data.DataLoader(dataset_train, batch_size=args.train_batch_size, shuffle=True, num_workers=args.dataloader_num_workers)
     dataset_val = PairedDataset(dataset_path=args.dataset_path, split="test", tokenizer=net_difix.tokenizer)
-    random.Random(42).shuffle(dataset_val.img_names)
+    random.Random(42).shuffle(dataset_val.img_ids)
     dl_val = torch.utils.data.DataLoader(dataset_val, batch_size=1, shuffle=False, num_workers=0)
 
     # Resume from checkpoint
